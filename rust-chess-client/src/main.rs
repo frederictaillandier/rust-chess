@@ -1,4 +1,4 @@
-use std::{io::Write, net::TcpStream, thread::sleep, time::Duration};
+use std::{fs::Permissions, io::Write, net::TcpStream, thread::sleep, time::Duration};
 
 fn main() {
     let connection = TcpStream::connect("127.0.0.1:9999");
@@ -8,6 +8,9 @@ fn main() {
         Ok(mut stream) => {
             println!("Connected to the server!");
             stream.write(b"Hello from the client!");
+            stream.flush();
+            sleep(Duration::from_secs(2));
+            stream.write(b"Hello from the client! 2");
             stream.flush();
         }
         Err(e) => {
