@@ -7,18 +7,31 @@ use std::thread;
 
 use crate::matchmaker::MatchMaker;
 
+struct Player {
+    uid: u32,
+    stream: TcpStream,
+}
+
 pub struct ConnectionHolder {
     matchmaker: MatchMaker,
+    connection_counter: u32,
+    players: Vec<Player>,
 }
 
 impl ConnectionHolder {
     pub fn new(matchmaker: MatchMaker) -> ConnectionHolder {
         ConnectionHolder {
             matchmaker: matchmaker,
+            connection_counter: 0,
+            players: vec![],
         }
     }
 
-    fn open_connection_thread(&mut self, ip_port: &str, channel_stream_sender: Sender<TcpStream>) {
+    fn open_connection_loop_thread(
+        &mut self,
+        ip_port: &str,
+        channel_stream_sender: Sender<TcpStream>,
+    ) {
         let bind_result = TcpListener::bind(ip_port);
         let listener = bind_result.expect("Failed to bind tcp connection");
 
@@ -33,20 +46,18 @@ impl ConnectionHolder {
         });
     }
 
-    fn try_register_new_connections(
-        &mut self,
-        channel_stream_receiver: &Receiver<TcpStream>,
-        streams: &mut Vec<TcpStream>,
-    ) {
+    fn try_register_new_connections(&mut self, channel_stream_receiver: &Receiver<TcpStream>) {
         let res = channel_stream_receiver.try_recv();
         match res {
             Ok(stream) => {
-                self.matchmaker.on_new_player_connected(&stream);
-                streams.push(stream);
+                let uid = self.connection_counter;
+                self.connection_counter += 1;
+                self.matchmaker.on_new_player_connected(uid);
+                self.players.push(Player { uid, stream });
             }
             Err(e) => {
                 if e == mpsc::TryRecvError::Empty {
-                    //println!("No new player connected");
+                    //Nothing happened
                 } else {
                     println!("Error while receiving new player {}", e);
                 }
@@ -54,27 +65,27 @@ impl ConnectionHolder {
         }
     }
 
-    fn listen_sockets(&mut self, channel_stream_receiver: Receiver<TcpStream>) {
-        let mut streams: Vec<TcpStream> = vec![];
-
+    fn read_sockets_loop(&mut self, channel_stream_receiver: Receiver<TcpStream>) {
         let mut buf = [0; 1024];
         loop {
-            self.try_register_new_connections(&channel_stream_receiver, &mut streams);
+            self.try_register_new_connections(&channel_stream_receiver);
 
             let mut dead_stream_intexes = Vec::new();
             let mut i = 0;
 
-            for mut stream in streams.iter() {
+            for player in self.players.iter() {
                 //clearing the buffer
                 buf.fill(0);
-                let read_result = stream.read(&mut buf);
+
+                //Unfortunately it looks like we can't use the stream directly, we need to clone it
+                let read_result = player.stream.try_clone().unwrap().read(&mut buf);
 
                 match read_result {
                     Ok(byte_read) => {
                         if byte_read > 0 {
                             //received something
                             self.matchmaker.on_player_says(
-                                stream,
+                                player.uid,
                                 buf.to_vec().iter().map(|b| *b as char).collect::<String>(),
                             );
                         } else {
@@ -95,8 +106,9 @@ impl ConnectionHolder {
             }
 
             for index in dead_stream_intexes.iter().rev() {
-                self.matchmaker.on_player_disconnected(&streams[*index]);
-                streams.remove(*index);
+                self.matchmaker
+                    .on_player_disconnected(self.players[*index].uid);
+                self.players.remove(*index);
             }
         }
     }
@@ -106,7 +118,7 @@ impl ConnectionHolder {
             Sender<TcpStream>,
             Receiver<TcpStream>,
         ) = mpsc::channel();
-        self.open_connection_thread(ip_port, channel_stream_sender);
-        self.listen_sockets(channel_stream_receiver);
+        self.open_connection_loop_thread(ip_port, channel_stream_sender);
+        self.read_sockets_loop(channel_stream_receiver);
     }
 }

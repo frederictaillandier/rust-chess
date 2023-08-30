@@ -9,9 +9,11 @@ fn main() {
             println!("Connected to the server!");
             stream.write(b"Hello from the client!");
             stream.flush();
-            sleep(Duration::from_secs(2));
-            stream.write(b"Hello from the client! 2");
-            stream.flush();
+            loop {
+                sleep(Duration::from_secs(5));
+                stream.write(b"I wanna play");
+                stream.flush();
+            }
         }
         Err(e) => {
             println!("Failed to connect: {e}");
