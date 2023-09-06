@@ -1,4 +1,7 @@
+use crate::event_type;
 use std::collections::HashMap;
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread;
 
 type Uid = u32;
 pub struct Game {
@@ -17,14 +20,21 @@ pub struct MatchMaker {
     hanging_player: Option<Uid>,
     games: HashMap<Uid, Game>,
     players: HashMap<Uid, Player>,
+    sender_to_tcp_connection: Sender<event_type::EventType>,
+    receiver_from_tcp_connection: Receiver<event_type::EventType>,
 }
 
 impl MatchMaker {
-    pub fn new() -> MatchMaker {
+    pub fn new(
+        sender_to_tcp_connection: Sender<event_type::EventType>,
+        receiver_from_tcp_connection: Receiver<event_type::EventType>,
+    ) -> MatchMaker {
         MatchMaker {
             hanging_player: None,
             games: HashMap::new(),
             players: HashMap::new(),
+            sender_to_tcp_connection: sender_to_tcp_connection,
+            receiver_from_tcp_connection: receiver_from_tcp_connection,
         }
     }
 
@@ -130,5 +140,35 @@ impl MatchMaker {
             "Game {} ended, {} won and {} lost.",
             game_uid, uid_win, uid_lose
         );
+    }
+
+    pub fn start_loop_thread(mut self) {
+        thread::spawn(move || loop {
+            let message_from_tcp = self.receiver_from_tcp_connection.recv();
+            match message_from_tcp {
+                Ok(message) => match message {
+                    event_type::EventType::PlayerConnect(uid) => {
+                        self.on_new_player_connected(uid);
+                    }
+                    event_type::EventType::PlayerDisconnect(uid) => {
+                        self.on_player_disconnected(uid);
+                    }
+                    event_type::EventType::PlayerSay(uid, message) => {
+                        self.on_player_says(uid, message);
+                    }
+                    event_type::EventType::PlayerPlay(uid, x1, y1, x2, y2) => {
+                        println!(
+                            "Player {} played from ({},{}) to ({},{})",
+                            uid, x1, y1, x2, y2
+                        );
+                    }
+                },
+                Err(e) => match e {
+                    _ => {
+                        println!("Error while reading from stream {}", e);
+                    }
+                },
+            }
+        });
     }
 }
