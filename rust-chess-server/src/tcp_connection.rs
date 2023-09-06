@@ -1,11 +1,11 @@
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
-use crate::matchmaker::MatchMaker;
+use crate::event_type;
 
 struct Player {
     uid: u32,
@@ -13,17 +13,22 @@ struct Player {
 }
 
 pub struct ConnectionHolder {
-    matchmaker: MatchMaker,
     connection_counter: u32,
     players: Vec<Player>,
+    sender_to_matchmaker: Sender<event_type::EventType>,
+    receiver_from_matchmaker: Receiver<event_type::EventType>,
 }
 
 impl ConnectionHolder {
-    pub fn new(matchmaker: MatchMaker) -> ConnectionHolder {
+    pub fn new(
+        sender_to_matchmaker: Sender<event_type::EventType>,
+        receiver_from_matchmaker: Receiver<event_type::EventType>,
+    ) -> ConnectionHolder {
         ConnectionHolder {
-            matchmaker: matchmaker,
             connection_counter: 0,
             players: vec![],
+            sender_to_matchmaker: sender_to_matchmaker,
+            receiver_from_matchmaker: receiver_from_matchmaker,
         }
     }
 
@@ -52,7 +57,9 @@ impl ConnectionHolder {
             Ok(stream) => {
                 let uid = self.connection_counter;
                 self.connection_counter += 1;
-                self.matchmaker.on_new_player_connected(uid);
+                self.sender_to_matchmaker
+                    .send(event_type::EventType::PlayerConnect(uid))
+                    .unwrap();
                 self.players.push(Player { uid, stream });
             }
             Err(e) => {
@@ -84,10 +91,12 @@ impl ConnectionHolder {
                     Ok(byte_read) => {
                         if byte_read > 0 {
                             //received something
-                            self.matchmaker.on_player_says(
-                                player.uid,
-                                buf.to_vec().iter().map(|b| *b as char).collect::<String>(),
-                            );
+                            self.sender_to_matchmaker
+                                .send(event_type::EventType::PlayerSay(
+                                    player.uid,
+                                    buf.to_vec().iter().map(|b| *b as char).collect::<String>(),
+                                ))
+                                .unwrap();
                         } else {
                             // Client disconnected
                             dead_stream_intexes.push(i);
@@ -106,9 +115,25 @@ impl ConnectionHolder {
             }
 
             for index in dead_stream_intexes.iter().rev() {
-                self.matchmaker
-                    .on_player_disconnected(self.players[*index].uid);
+                self.sender_to_matchmaker
+                    .send(event_type::EventType::PlayerDisconnect(
+                        self.players[*index].uid,
+                    ))
+                    .unwrap();
+
                 self.players.remove(*index);
+            }
+        }
+    }
+
+    pub fn say_to_player(&mut self, player_uid: u32, message: String) {
+        let player = self.players.iter_mut().find(|p| p.uid == player_uid);
+        match player {
+            Some(player) => {
+                player.stream.write(message.as_bytes());
+            }
+            None => {
+                println!("Player {} not found", player_uid);
             }
         }
     }
